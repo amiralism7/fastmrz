@@ -3,6 +3,10 @@ import cv2
 import pytesseract
 from datetime import datetime
 import os
+import base64
+import binascii
+import sys
+import io
 
 
 class FastMRZ:
@@ -13,47 +17,63 @@ class FastMRZ:
             os.path.join(os.path.dirname(__file__), "model/mrz_seg.onnx")
         )
 
-    def _process_image(self, image_path):
-        image = (
-            cv2.imread(image_path, cv2.IMREAD_COLOR)
-            if isinstance(image_path, str)
-            else image_path
-        )
+    def _process_image(self, image_input):
+        if isinstance(image_input, str):
+            if os.path.isfile(image_input):
+                # It's a file path
+                image = cv2.imread(image_input, cv2.IMREAD_COLOR)
+            else:
+                try:
+                    image_data = base64.b64decode(image_input)
+                    nparr = np.frombuffer(image_data, np.uint8)
+                    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                except binascii.Error:
+                    raise ValueError("Invalid base64 image data")
+        elif isinstance(image_input, np.ndarray):
+            image = image_input
+        else:
+            raise ValueError("Invalid image input type")
 
         image = cv2.resize(image, (256, 256), interpolation=cv2.INTER_NEAREST)
         image = np.asarray(np.float32(image / 255))
 
-        if len(image.shape) > 3:
+        if image.shape[-1] > 3:
             image = image[:, :, :3]
         image = np.reshape(image, (1, 256, 256, 3))
 
         return image
-
-    def _get_roi(self, output_data, image_path):
+    
+    def _get_roi(self, output_data, image_input):
         if self.tesseract_path != "":
             pytesseract.pytesseract.tesseract_cmd = self.tesseract_path
-        image = (
-            cv2.imread(image_path, cv2.IMREAD_COLOR)
-            if isinstance(image_path, str)
-            else image_path
-        )
 
-        output_data = (output_data[0, :, :, 0] > 0.35) * 1
-        output_data = np.uint8(output_data * 255)
+        if isinstance(image_input, str):
+            if os.path.isfile(image_input):
+                image = cv2.imread(image_input, cv2.IMREAD_COLOR)
+            else:
+                try:
+                    image_data = base64.b64decode(image_input)
+                    nparr = np.frombuffer(image_data, np.uint8)
+                    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                except binascii.Error:
+                    raise ValueError("Invalid base64 image data")
+        elif isinstance(image_input, np.ndarray):
+            image = image_input
+        else:
+            raise ValueError("Invalid image input type")
+
+        output_data = (output_data[0, :, :, 0] > 0.35).astype(np.uint8) * 255
         altered_image = cv2.resize(output_data, (image.shape[1], image.shape[0]))
 
-        kernel = np.ones((5, 5), dtype=np.float32)
+        kernel = np.ones((5, 5), dtype=np.uint8)
         altered_image = cv2.erode(altered_image, kernel, iterations=3)
-        contours, hierarchy = cv2.findContours(
+        contours, _ = cv2.findContours(
             altered_image.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
         )
         if len(contours) == 0:
             return ""
 
-        c_area = np.zeros([len(contours)])
-        for j in range(len(contours)):
-            c_area[j] = cv2.contourArea(contours[j])
-
+        c_area = np.array([cv2.contourArea(c) for c in contours])
         x, y, w, h = cv2.boundingRect(contours[np.argmax(c_area)])
         roi_arr = image[y : y + h, x : x + w].copy()
         return pytesseract.image_to_string(roi_arr, lang="mrz")
@@ -112,14 +132,26 @@ class FastMRZ:
         formatted_date = str(datetime.strptime(input_date, "%y%m%d").date())
         return formatted_date
 
-    def _is_valid(self, image):
-        if isinstance(image, str):
-            return bool(os.path.isfile(image))
-        elif isinstance(image, np.ndarray):
-            return image.shape[-1] == 3
+    def _is_valid(self, image_input):
+        if isinstance(image_input, str):
+            if os.path.isfile(image_input):
+                return True
+            else:
+                try:
+                    base64.b64decode(image_input)
+                    return True
+                except binascii.Error:
+                    return False
+        elif isinstance(image_input, np.ndarray):
+            return image_input.shape[-1] == 3
+        else:
+            return False
 
     def _get_raw_mrz(self, image):
         image_array = self._process_image(image)
+        
+        print("image_shape", image_array.shape, file=sys.stderr)
+        
         self.net.setInput(image_array)
         output_data = self.net.forward()
         raw_roi = self._get_roi(output_data, image)
@@ -129,6 +161,7 @@ class FastMRZ:
         if not self._is_valid(image):
             return {"status": "FAILURE", "message": "Invalid input image"}
         mrz_text = self._get_raw_mrz(image)
+        print(f"raw mrz text: {mrz_text}", file=sys.stderr)
         return mrz_text if raw else self._parse_mrz(mrz_text)
 
     def _get_date_of_birth(self, date_of_birth_str, date_of_expiry_str):
