@@ -14,10 +14,15 @@ def extract_mrz_from_base64():
         return jsonify({'error': 'No base64 image provided'}), 400
 
     base64_image = request.json['base64']
-    print(type(base64_image), file=sys.stderr)
-    mrz_data = fast_mrz.get_mrz(base64_image, raw=True)
+    text_raw, parsed = fast_mrz.get_mrz(base64_image, raw=True)
+    api_output = {
+        "mrz_text": text_raw,
+        "status": parsed["status"]
+    }
+    if "message" in parsed.keys():
+        api_output["message"] = parsed["message"]
     
-    return jsonify(mrz_data)
+    return jsonify(api_output)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)

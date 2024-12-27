@@ -8,75 +8,13 @@ import binascii
 import sys
 import io
 
-
 class FastMRZ:
-
     def __init__(self, tesseract_path=""):
         self.tesseract_path = tesseract_path
         self.net = cv2.dnn.readNetFromONNX(
             os.path.join(os.path.dirname(__file__), "model/mrz_seg.onnx")
         )
-
-    def _process_image(self, image_input):
-        if isinstance(image_input, str):
-            if os.path.isfile(image_input):
-                # It's a file path
-                image = cv2.imread(image_input, cv2.IMREAD_COLOR)
-            else:
-                try:
-                    image_data = base64.b64decode(image_input)
-                    nparr = np.frombuffer(image_data, np.uint8)
-                    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                except binascii.Error:
-                    raise ValueError("Invalid base64 image data")
-        elif isinstance(image_input, np.ndarray):
-            image = image_input
-        else:
-            raise ValueError("Invalid image input type")
-
-        image = cv2.resize(image, (256, 256), interpolation=cv2.INTER_NEAREST)
-        image = np.asarray(np.float32(image / 255))
-
-        if image.shape[-1] > 3:
-            image = image[:, :, :3]
-        image = np.reshape(image, (1, 256, 256, 3))
-
-        return image
-    
-    def _get_roi(self, output_data, image_input):
-        if self.tesseract_path != "":
-            pytesseract.pytesseract.tesseract_cmd = self.tesseract_path
-
-        if isinstance(image_input, str):
-            if os.path.isfile(image_input):
-                image = cv2.imread(image_input, cv2.IMREAD_COLOR)
-            else:
-                try:
-                    image_data = base64.b64decode(image_input)
-                    nparr = np.frombuffer(image_data, np.uint8)
-                    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                except binascii.Error:
-                    raise ValueError("Invalid base64 image data")
-        elif isinstance(image_input, np.ndarray):
-            image = image_input
-        else:
-            raise ValueError("Invalid image input type")
-
-        output_data = (output_data[0, :, :, 0] > 0.35).astype(np.uint8) * 255
-        altered_image = cv2.resize(output_data, (image.shape[1], image.shape[0]))
-
-        kernel = np.ones((5, 5), dtype=np.uint8)
-        altered_image = cv2.erode(altered_image, kernel, iterations=3)
-        contours, _ = cv2.findContours(
-            altered_image.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
-        )
-        if len(contours) == 0:
-            return ""
-
-        c_area = np.array([cv2.contourArea(c) for c in contours])
-        x, y, w, h = cv2.boundingRect(contours[np.argmax(c_area)])
-        roi_arr = image[y : y + h, x : x + w].copy()
-        return pytesseract.image_to_string(roi_arr, lang="mrz")
+        self.image = None
 
     def _cleanse_roi(self, raw_text):
         input_list = raw_text.replace(" ", "").split("\n")
@@ -131,7 +69,7 @@ class FastMRZ:
     def _format_date(self, input_date):
         formatted_date = str(datetime.strptime(input_date, "%y%m%d").date())
         return formatted_date
-
+    
     def _is_valid(self, image_input):
         if isinstance(image_input, str):
             if os.path.isfile(image_input):
@@ -146,23 +84,140 @@ class FastMRZ:
             return image_input.shape[-1] == 3
         else:
             return False
+        
+    def _process_image(self, threshold=255):
+        image = self.image.copy()
+        # filter out high intensity pixels
+        image = self._apply_threshold(image, threshold)
+        # Proceed with existing processing
+        image = cv2.resize(image, (256, 256), interpolation=cv2.INTER_NEAREST)
+        image = np.asarray(np.float32(image / 255))
+        if image.shape[-1] > 3:
+            image = image[:, :, :3]
+        image = np.reshape(image, (1, 256, 256, 3))
+        return image
+    
+    def _get_roi(self, output_data, threshold=255):
+        if self.tesseract_path != "":
+            pytesseract.pytesseract.tesseract_cmd = self.tesseract_path
 
-    def _get_raw_mrz(self, image):
-        image_array = self._process_image(image)
-        
-        print("image_shape", image_array.shape, file=sys.stderr)
-        
+        image = self.image.copy()
+        output_data = (output_data[0, :, :, 0] > 0.35).astype(np.uint8) * 255
+        altered_image = cv2.resize(output_data, (image.shape[1], image.shape[0]))
+
+        kernel = np.ones((5, 5), dtype=np.uint8)
+        altered_image = cv2.erode(altered_image, kernel, iterations=3)
+        contours, _ = cv2.findContours(
+            altered_image.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+        )
+        if len(contours) == 0:
+            return ""
+
+        c_area = np.array([cv2.contourArea(c) for c in contours])
+        x, y, w, h = cv2.boundingRect(contours[np.argmax(c_area)])
+        roi_arr = image[y : y + h, x : x + w].copy()
+
+        #### Filter out high intensity pixels
+        roi_arr = self._apply_threshold(roi_arr, threshold)
+        return pytesseract.image_to_string(roi_arr, lang="mrz")
+    
+    def _get_raw_mrz(self, threshold=255):
+        image_array = self._process_image(threshold)   
         self.net.setInput(image_array)
         output_data = self.net.forward()
-        raw_roi = self._get_roi(output_data, image)
+        
+        raw_roi = self._get_roi(output_data, threshold)
         return self._cleanse_roi(raw_roi)
-
+    
+    def get_mrz_with_threshold(self, image, raw=False, threshold=255):
+        if not self._is_valid(image):
+            return {"status": "FAILURE", "message": "Invalid input image"}
+        
+        if not isinstance(threshold, int) or threshold < 0 or threshold > 255:
+            threshold = 255
+            print("Invalid threshold value. Setting threshold to 255")
+            
+        self._load_image(image)
+        mrz_text = self._get_raw_mrz(threshold=threshold)
+        ### rotate image if no MRZ detected 
+        if not mrz_text:
+            for i in range(1, 4):
+                self.image = cv2.rotate(self.image, cv2.ROTATE_90_CLOCKWISE)
+                mrz_text = self._get_raw_mrz(threshold=threshold)
+                if mrz_text:
+                    break
+        ###
+        return mrz_text if raw else self._parse_mrz(mrz_text)
+    
     def get_mrz(self, image, raw=False):
         if not self._is_valid(image):
             return {"status": "FAILURE", "message": "Invalid input image"}
-        mrz_text = self._get_raw_mrz(image)
-        print(f"raw mrz text: {mrz_text}", file=sys.stderr)
-        return mrz_text if raw else self._parse_mrz(mrz_text)
+        
+        self._load_image(image)
+        ## we want to find the best rotation (we check for multiple thresholds), which will return a MRZ of length at least 20
+        thresholds = [20, 90, 210]
+        
+        for threshold in thresholds:
+            for rotation in range(4):
+                mrz_text = self._get_raw_mrz(threshold=threshold)
+                if len(mrz_text) > 20:
+                    break
+                self.image = cv2.rotate(self.image, cv2.ROTATE_90_CLOCKWISE * rotation)
+            if len(mrz_text) > 20:
+                break
+            
+        ## check if the loops where broken (a sign that we found a MRZ)
+        if len(mrz_text) <= 20:
+            mrz_text = ""
+            parsed_mrz = {"status": "FAILURE", "message": "No MRZ detected"}
+        else:
+            ## a correct mrz will also have a valid parsed mrz
+            ## we check for different thresholds to find the one that has a valid parsed mrz
+            ## if we don't find a valid parsed mrz, we return the one that has the correct length (89 = 44 + 44 + 1)
+            ## if we don't find a correct length, we return the last one
+            correct_len = None
+            correct_len_parsed = None
+            for threshold in thresholds:
+                mrz_text = self._get_raw_mrz(threshold=threshold)
+                parsed_mrz = self._parse_mrz(mrz_text)
+                if parsed_mrz["status"] == "SUCCESS":
+                    break
+                if len(mrz_text) == 89:
+                    correct_len = mrz_text
+                    correct_len_parsed = parsed_mrz
+                    
+            if parsed_mrz["status"] != "SUCCESS":
+                if correct_len is not None:
+                    mrz_text = correct_len
+                    parsed_mrz = correct_len_parsed
+
+        return (mrz_text, parsed_mrz) if raw else parsed_mrz
+
+    def _apply_threshold(self, image, threshold=255):
+        mask = cv2.inRange(image, (threshold, threshold, threshold), (255, 255, 255))
+        mask = np.stack([mask]*3, axis=-1)
+        filtered_image = np.where(mask, 255, image).astype(np.uint8)
+        return filtered_image
+    
+    def _load_image(self, image_input):
+        if isinstance(image_input, str):
+            if os.path.isfile(image_input):
+                # It's a file path
+                image = cv2.imread(image_input, cv2.IMREAD_COLOR)
+            else:
+                # Assume it's a base64-encoded string
+                try:
+                    image_data = base64.b64decode(image_input)
+                    nparr = np.frombuffer(image_data, np.uint8)
+                    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                except binascii.Error:
+                    raise ValueError("Invalid base64 image data")
+        elif isinstance(image_input, np.ndarray):
+            # It's already an image array
+            image = image_input
+        else:
+            raise ValueError("Invalid image input type")
+        self.image = image   
 
     def _get_date_of_birth(self, date_of_birth_str, date_of_expiry_str):
         birth_year = int(date_of_birth_str[:4])
@@ -315,3 +370,4 @@ class FastMRZ:
         # Final status
         mrz_code_dict["status"] = "SUCCESS"
         return mrz_code_dict
+
