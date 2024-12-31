@@ -15,6 +15,8 @@ class FastMRZ:
             os.path.join(os.path.dirname(__file__), "model/mrz_seg.onnx")
         )
         self.image = None
+        self._thresholds = [20, 90, 210]
+        self._proper_threshold = 255
 
     def _cleanse_roi(self, raw_text):
         input_list = raw_text.replace(" ", "").split("\n")
@@ -155,7 +157,7 @@ class FastMRZ:
         
         self._load_image(image)
         ## we want to find the best rotation (we check for multiple thresholds), which will return a MRZ of length at least 20
-        thresholds = [20, 90, 210]
+        thresholds = self._thresholds  # [20, 90, 210]
         
         for threshold in thresholds:
             for rotation in range(4):
@@ -177,14 +179,17 @@ class FastMRZ:
             ## if we don't find a correct length, we return the last one
             correct_len = None
             correct_len_parsed = None
+            temp_threshold = 255
             for threshold in thresholds:
                 mrz_text = self._get_raw_mrz(threshold=threshold)
                 parsed_mrz = self._parse_mrz(mrz_text)
                 if parsed_mrz["status"] == "SUCCESS":
+                    self._proper_threshold = threshold
                     break
                 if len(mrz_text) == 89:
                     correct_len = mrz_text
                     correct_len_parsed = parsed_mrz
+                    self._proper_threshold = threshold
                     
             if parsed_mrz["status"] != "SUCCESS":
                 if correct_len is not None:
@@ -233,7 +238,7 @@ class FastMRZ:
             return {"status": "FAILURE", "message": "No MRZ detected"}
         mrz_lines = mrz_text.strip().split("\n")
         if len(mrz_lines) not in [2, 3]:
-            return {"status": "FAILURE", "message": "Invalid MRZ format"}
+            return {"status": "FAILURE", "message": "Invalid MRZ format (invalid number of lines)"}
 
         mrz_code_dict = {}
         if len(mrz_lines) == 2:
@@ -241,9 +246,15 @@ class FastMRZ:
 
             # Line 1
             mrz_code_dict["document_type"] = mrz_lines[0][:2].strip("<")
-            mrz_code_dict["country_code"] = mrz_lines[0][2:5]
+            mrz_code_dict["country_code"] = mrz_lines[0][2:5].replace("<", "")
+            
+            ## Handling German passport properly
+            if mrz_code_dict["country_code"] == "D":
+                mrz_code_dict["country_code"] = "DEU"
+                
             if not mrz_code_dict["country_code"].isalpha():
-                return {"status": "FAILURE", "message": "Invalid MRZ format"}
+                return {"status": "FAILURE", "message": "Invalid MRZ country_code format"}
+            
             names = mrz_lines[0][5:].split("<<")
             mrz_code_dict["surname"] = names[0].replace("<", " ")
             mrz_code_dict["given_name"] = names[1].replace("<", " ")
@@ -258,9 +269,16 @@ class FastMRZ:
                     "status": "FAILURE",
                     "message": "document number checksum is not matching",
                 }
-            mrz_code_dict["nationality"] = mrz_lines[1][10:13]
+                
+            mrz_code_dict["nationality"] = mrz_lines[1][10:13].replace("<", "")
+            
+            ## Handling German passport properly
+            if mrz_code_dict["nationality"] == "D":
+                mrz_code_dict["nationality"] = "DEU"
+            
             if not mrz_code_dict["nationality"].isalpha():
-                return {"status": "FAILURE", "message": "Invalid MRZ format"}
+                return {"status": "FAILURE", "message": "Invalid MRZ nationality format"}
+            
             mrz_code_dict["date_of_birth"] = mrz_lines[1][13:19]
             if (
                 self._get_check_digit(mrz_code_dict["date_of_birth"])
@@ -310,9 +328,15 @@ class FastMRZ:
 
             # Line 1
             mrz_code_dict["document_type"] = mrz_lines[0][:2].strip("<")
-            mrz_code_dict["country_code"] = mrz_lines[0][2:5]
+            mrz_code_dict["country_code"] = mrz_lines[0][2:5].replace("<", "")
+            
+            ## Handling German passport properly
+            if mrz_code_dict["country_code"] == "D":
+                mrz_code_dict["country_code"] = "DEU"
+            
             if not mrz_code_dict["country_code"].isalpha():
-                return {"status": "FAILURE", "message": "Invalid MRZ format"}
+                return {"status": "FAILURE", "message": "Invalid MRZ country_code format"}
+            
             mrz_code_dict["document_number"] = mrz_lines[0][5:14]
             if (
                 self._get_check_digit(mrz_code_dict["document_number"])
@@ -350,9 +374,16 @@ class FastMRZ:
             mrz_code_dict["date_of_birth"] = self._get_date_of_birth(
                 mrz_code_dict["date_of_birth"], mrz_code_dict["date_of_expiry"]
             )
-            mrz_code_dict["nationality"] = mrz_lines[1][15:18]
+            
+            mrz_code_dict["nationality"] = mrz_lines[1][15:18].replace("<", "")
+            
+            ## Handling German passport properly
+            if mrz_code_dict["nationality"] == "D":
+                mrz_code_dict["nationality"] = "DEU"
+            
             if not mrz_code_dict["nationality"].isalpha():
-                return {"status": "FAILURE", "message": "Invalid MRZ format"}
+                return {"status": "FAILURE", "message": "Invalid MRZ nationality format"}
+            
             mrz_code_dict["optional_data_2"] = mrz_lines[0][18:29].strip("<")
             if mrz_lines[1][-1] != self._get_final_check_digit(
                 mrz_lines, mrz_code_dict["mrz_type"]
