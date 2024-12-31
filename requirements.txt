@@ -3,4 +3,3 @@ pytesseract>=0.3.10
 flask
 flask_cors
 requests
-cv2
