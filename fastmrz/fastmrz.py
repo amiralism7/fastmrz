@@ -179,9 +179,16 @@ class FastMRZ:
             
         # From the segmentation mask, keep pixels > 0.35
         output_data = (output_data[0, :, :, 0] > 0.35).astype(np.uint8) * 255
+        
+        with open("output_data.pkl", "wb") as f:
+            pickle.dump(output_data, f)
             
         # Resize the mask to original image size
         altered_image = cv2.resize(output_data, (image.shape[1], image.shape[0]))
+        
+        with open("altered_image.pkl", "wb") as f:
+            pickle.dump(altered_image, f)
+            
 
         # Morphological erode to remove small noise
         kernel = np.ones((5, 5), dtype=np.uint8)
@@ -191,7 +198,7 @@ class FastMRZ:
             altered_image.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
         )
         if len(contours) == 0:
-            return ""
+            return "", None
 
         # Pick the largest contour
         c_area = np.array([cv2.contourArea(c) for c in contours])
@@ -204,9 +211,21 @@ class FastMRZ:
         roi_arr = self._detect_and_correct_skew(roi_arr)
 
         # Finally, run Tesseract with the MRZ language
-        raw_text = pytesseract.image_to_string(roi_arr, lang="mrz")
+        # raw_text = pytesseract.image_to_string(roi_arr, lang="mrz")
         custom_config = r'--oem 3 --psm 6'
         confidence_data = pytesseract.image_to_data(roi_arr, lang="mrz", output_type=pytesseract.Output.DICT, config=custom_config)
+        
+        ### find the 2 confidence["text"] with highest length
+        text_lengths = [len(text) for text in confidence_data["text"]]
+        # argsort 
+        indices = np.argsort(text_lengths)
+        # get the 2 highest indices
+        highest_indices = indices[-2:]
+        # sort these 2 indices in ascending order 
+        highest_indices = np.sort(highest_indices)
+        # join the 2 texts with highest length
+        raw_text = "\n".join([confidence_data["text"][i] for i in highest_indices]) 
+        
         return raw_text, confidence_data
     
     def _get_raw_mrz(self, threshold=255):
@@ -222,28 +241,8 @@ class FastMRZ:
         output_data = self.net.forward()
         
         raw_roi, confidence_data = self._get_roi(output_data, threshold)
-        return self._cleanse_roi(raw_roi), confidence_data
-    
-    # def get_mrz_with_threshold(self, image, raw=False, threshold=255):
-    #     if not self._is_valid(image):
-    #         return {"status": "FAILURE", "message": "Invalid input image"}
         
-    #     if not isinstance(threshold, int) or threshold < 0 or threshold > 255:
-    #         threshold = 255
-    #         print("Invalid threshold value. Setting threshold to 255")
-            
-    #     self._load_image(image)
-    #     mrz_text, confidence_data = self._get_raw_mrz(threshold=threshold)
-
-    #     # If no result found, fallback to 90° increments
-    #     if not mrz_text:
-    #         for i in range(1, 4):
-    #             self.image = cv2.rotate(self.image, cv2.ROTATE_90_CLOCKWISE)
-    #             mrz_text, confidence_data = self._get_raw_mrz(threshold=threshold)
-    #             if mrz_text:
-    #                 break
-
-    #     return mrz_text if raw else self._parse_mrz(mrz_text)
+        return self._cleanse_roi(raw_roi), confidence_data
     
     def get_mrz(self, image, raw=False):
         if not self._is_valid(image):
