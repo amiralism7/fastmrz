@@ -2,6 +2,8 @@ FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata/
+# This is the default number of workers for gunicorn
+ENV WORKERS=3
 
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
@@ -23,5 +25,4 @@ COPY tessdata/mrz.traineddata /usr/share/tesseract-ocr/4.00/tessdata/
 COPY . /app 
 EXPOSE 5001
 
-CMD ["python", "api.py"]
-
+CMD ["gunicorn", "-w", "${WORKERS}", "api:app", "--bind", "0.0.0.0:5001"]
