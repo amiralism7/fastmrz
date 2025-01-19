@@ -6,7 +6,6 @@ from datetime import datetime
 import os
 import base64
 import binascii
-import pickle
 
 class FastMRZ:
     def __init__(self, tesseract_path=""):
@@ -179,16 +178,9 @@ class FastMRZ:
             
         # From the segmentation mask, keep pixels > 0.35
         output_data = (output_data[0, :, :, 0] > 0.35).astype(np.uint8) * 255
-        
-        with open("output_data.pkl", "wb") as f:
-            pickle.dump(output_data, f)
             
         # Resize the mask to original image size
         altered_image = cv2.resize(output_data, (image.shape[1], image.shape[0]))
-        
-        with open("altered_image.pkl", "wb") as f:
-            pickle.dump(altered_image, f)
-            
 
         # Morphological erode to remove small noise
         kernel = np.ones((5, 5), dtype=np.uint8)
@@ -233,9 +225,6 @@ class FastMRZ:
         Runs the net on the preprocessed image and returns the cleansed MRZ text.
         """
         image_array = self._process_image(threshold)
-        
-        with open("image_array.pkl", "wb") as f:
-            pickle.dump(image_array, f)
             
         self.net.setInput(image_array)
         output_data = self.net.forward()
